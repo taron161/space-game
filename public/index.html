@@ -36,21 +36,37 @@
             background: rgba(0, 0, 0, 0.7);
             padding: 10px;
             border-radius: 5px;
+            z-index: 100;
+        }
+
+        #connectionStatus {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 14px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 100;
         }
     </style>
 </head>
 <body>
     <canvas id="gameCanvas" width="900" height="650"></canvas>
     <div id="playerCount">Игроков: 1</div>
+    <div id="connectionStatus">Подключение...</div>
 
     <script>
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const playerCountEl = document.getElementById('playerCount');
+        const connectionStatusEl = document.getElementById('connectionStatus');
 
         // ==================== ПОДКЛЮЧЕНИЕ К СЕРВЕРУ ====================
-        const ws = new WebSocket(`ws://${window.location.host}`);
-        
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const ws = new WebSocket(protocol + window.location.host);
+
         // Игровые объекты
         const planets = [];
         const particles = [];
@@ -71,7 +87,9 @@
             angle: 0,
             fuel: 100,
             alive: true,
-            trail: []
+            trail: [],
+            color: '#E0E0E0',
+            name: 'Игрок'
         };
 
         // Создание звёздного поля
@@ -91,59 +109,79 @@
 
         // ==================== ОБРАБОТКА СООБЩЕНИЙ ====================
         ws.onopen = () => {
-            console.log('Подключено к серверу');
+            console.log('✅ Подключено к серверу');
+            connectionStatusEl.textContent = '✅ Подключено';
+            connectionStatusEl.style.color = '#4CAF50';
+        };
+
+        ws.onerror = (error) => {
+            console.error('❌ Ошибка WebSocket:', error);
+            connectionStatusEl.textContent = '❌ Ошибка подключения';
+            connectionStatusEl.style.color = '#F44336';
+        };
+
+        ws.onclose = () => {
+            console.log('🔌 Соединение закрыто');
+            connectionStatusEl.textContent = '🔌 Соединение закрыто';
+            connectionStatusEl.style.color = '#FF9800';
         };
 
         ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            
-            switch (data.type) {
-                case 'init':
-                    playerId = data.playerId;
-                    planets.push(...data.planets);
-                    goal = data.goal;
-                    
-                    data.players.forEach(p => {
-                        if (p.id !== playerId) {
-                            otherPlayers.set(p.id, p);
-                        } else {
-                            myShip.x = p.x;
-                            myShip.y = p.y;
-                            myShip.color = p.color;
-                            myShip.name = p.name;
+            try {
+                const data = JSON.parse(event.data);
+                
+                switch (data.type) {
+                    case 'init':
+                        playerId = data.playerId;
+                        planets.length = 0;
+                        planets.push(...data.planets);
+                        goal = data.goal;
+                        
+                        data.players.forEach(p => {
+                            if (p.id !== playerId) {
+                                otherPlayers.set(p.id, p);
+                            } else {
+                                myShip.x = p.x;
+                                myShip.y = p.y;
+                                myShip.color = p.color;
+                                myShip.name = p.name;
+                            }
+                        });
+                        console.log('🎮 Игра инициализирована');
+                        break;
+                        
+                    case 'state':
+                        data.players.forEach(p => {
+                            if (p.id === playerId) {
+                                // Обновляем своё состояние с сервера
+                                myShip.x = p.x;
+                                myShip.y = p.y;
+                                myShip.vx = p.vx;
+                                myShip.vy = p.vy;
+                                myShip.angle = p.angle;
+                                myShip.fuel = p.fuel;
+                                myShip.alive = p.alive;
+                            } else {
+                                otherPlayers.set(p.id, p);
+                            }
+                        });
+                        break;
+                        
+                    case 'playerJoined':
+                        if (data.player.id !== playerId) {
+                            otherPlayers.set(data.player.id, data.player);
                         }
-                    });
-                    break;
-                    
-                case 'state':
-                    data.players.forEach(p => {
-                        if (p.id === playerId) {
-                            // Обновляем своё состояние с сервера
-                            myShip.x = p.x;
-                            myShip.y = p.y;
-                            myShip.vx = p.vx;
-                            myShip.vy = p.vy;
-                            myShip.angle = p.angle;
-                            myShip.fuel = p.fuel;
-                            myShip.alive = p.alive;
-                        } else {
-                            otherPlayers.set(p.id, p);
-                        }
-                    });
-                    break;
-                    
-                case 'playerJoined':
-                    if (data.player.id !== playerId) {
-                        otherPlayers.set(data.player.id, data.player);
-                    }
-                    break;
-                    
-                case 'playerLeft':
-                    otherPlayers.delete(data.playerId);
-                    break;
+                        break;
+                        
+                    case 'playerLeft':
+                        otherPlayers.delete(data.playerId);
+                        break;
+                }
+                
+                playerCountEl.textContent = `Игроков: ${otherPlayers.size + 1}`;
+            } catch (e) {
+                console.error('Ошибка обработки сообщения:', e);
             }
-            
-            playerCountEl.textContent = `Игроков: ${otherPlayers.size + 1}`;
         };
 
         // ==================== ФИЗИКА ====================
@@ -213,7 +251,12 @@
             if (e.key.toLowerCase() === 'r') {
                 myShip.alive = true;
                 myShip.trail = [];
-                ws.send(JSON.stringify({ type: 'respawn' }));
+                myShip.vx = 0;
+                myShip.vy = 0;
+                myShip.fuel = 100;
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'respawn' }));
+                }
             }
         });
         window.addEventListener('keyup', (e) => {
@@ -503,7 +546,6 @@
 
             ctx.restore();
 
-            // Имя игрока
             if (!isMyShip && ship.name) {
                 ctx.fillStyle = 'white';
                 ctx.font = '12px Arial';
@@ -588,12 +630,10 @@
             drawGoal();
             drawGoalArrow();
             
-            // Отрисовка других игроков
             otherPlayers.forEach(player => {
                 drawShip(player, false);
             });
             
-            // Отрисовка своего корабля
             drawShip(myShip, true);
             
             drawUI();
